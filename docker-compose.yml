@@ -1,0 +1,14 @@
+services:
+  web:
+    build: .
+    image: water-isolation-workbench:latest
+    container_name: water-isolation-workbench
+    ports:
+      - "8000:8000"
+    volumes:
+      # SQLite 数据文件持久化，刷新 / 重启后场景与方案仍在
+      - water-data:/data
+    restart: unless-stopped
+
+volumes:
+  water-data:

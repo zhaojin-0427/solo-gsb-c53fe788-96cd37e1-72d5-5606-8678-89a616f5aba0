@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>供水检修隔离方案台</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">🚰 供水检修隔离方案台</div>
+  <div class="top-actions">
+    <button id="btn-new" type="button" title="新建空白场景">新建</button>
+    <button id="btn-sample" type="button" title="加载内置示例管网">载入示例</button>
+    <button id="btn-save" type="button" class="primary" title="保存场景到服务器">保存场景</button>
+    <button id="btn-solve" type="button" class="accent" title="求解最优隔离方案（限时 10 秒）">求解方案</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- 左：场景列表 -->
+  <aside class="sidebar">
+    <h2>已保存场景</h2>
+    <ul id="scenario-list" class="scenario-list"></ul>
+    <p class="hint" id="scenario-hint">尚未加载场景。</p>
+  </aside>
+
+  <!-- 中：画布 -->
+  <section class="canvas-wrap">
+    <div class="toolbar" id="toolbar">
+      <label><input type="radio" name="tool" value="select" checked> 选择/拖动</label>
+      <label><input type="radio" name="tool" value="add-user"> ➕ 用水节点</label>
+      <label><input type="radio" name="tool" value="add-source"> ➕ 水源</label>
+      <label><input type="radio" name="tool" value="add-pipe"> ── 普通管段</label>
+      <label><input type="radio" name="tool" value="add-valve"> ⬛ 可关阀门</label>
+      <span class="tool-sep"></span>
+      <button type="button" id="btn-delete" class="danger" title="删除选中节点或管段">删除选中</button>
+    </div>
+    <canvas id="canvas" width="900" height="600"></canvas>
+    <div class="statusbar">
+      <span id="stat-counts">节点 0/80 · 管段 0/120 · 阀门 0/40</span>
+      <span id="stat-mode"></span>
+      <span id="stat-scenario" class="muted"></span>
+    </div>
+    <div class="legend">
+      <span><i class="lg-source"></i>水源</span>
+      <span><i class="lg-user"></i>用水节点（正常供水）</span>
+      <span><i class="lg-off"></i>断供节点</span>
+      <span><i class="lg-protected"></i>必须保供</span>
+      <span><i class="lg-valve-open"></i>阀门（开启）</span>
+      <span><i class="lg-valve-closed"></i>关闭阀门</span>
+      <span><i class="lg-main"></i>检修段</span>
+    </div>
+  </section>
+
+  <!-- 右：属性与方案 -->
+  <aside class="panel">
+    <h2>属性</h2>
+    <div id="inspector" class="inspector">
+      <p class="muted">未选中任何元素。</p>
+      <ul class="tip">
+        <li>选择“普通管段/阀门”工具后，依次点击两个节点即可连线。</li>
+        <li>点击节点可设置类型、户数、保供标记。</li>
+        <li>点击普通管段可将其设为待检修段。</li>
+      </ul>
+    </div>
+
+    <h2>求解方案</h2>
+    <div id="solution-box" class="solution-box">
+      <p class="muted">尚未求解。</p>
+    </div>
+  </aside>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
