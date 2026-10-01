@@ -1,12 +1,13 @@
 """场景数据校验：容量限制、ID 唯一性、端点存在性等。
 
 任何不合法的管网都在这里被拒绝，返回中文错误列表；非法场景不会入库。
+批量对比的方案定义也在此校验（针对创建时的场景拓扑）。
 """
 from __future__ import annotations
 
 from typing import List, Tuple
 
-from .models import ScenarioIn
+from .models import ComparisonIn, ScenarioIn
 
 MAX_NODES = 80
 MAX_PIPES = 120
@@ -111,5 +112,77 @@ def normalize(sc: ScenarioIn) -> Tuple[dict, List[str]]:
         ],
         "maintenance_pipe_id": sc.maintenance_pipe_id,
         "protected_node_ids": list(dict.fromkeys(sc.protected_node_ids)),
+    }
+    return data, []
+
+
+# ---- 批量对比校验 ----
+
+MIN_PLANS = 2
+MAX_PLANS = 6
+
+
+def normalize_comparison(scenario: dict, cmp_in: ComparisonIn
+                         ) -> Tuple[dict, List[str]]:
+    """校验批量对比请求并规整为可入库 / 求解的结构。
+
+    scenario 为创建对比时的场景详情（nodes/pipes 等），方案快照将复制该拓扑，
+    之后对场景的修改不会改写已生成的快照。
+    """
+    errors: List[str] = []
+
+    plans = cmp_in.plans
+    if not (MIN_PLANS <= len(plans) <= MAX_PLANS):
+        errors.append(f"方案数量 {len(plans)} 不在允许范围 {MIN_PLANS}～{MAX_PLANS} 个")
+
+    if not (0 <= cmp_in.baseline_index < len(plans)):
+        errors.append(
+            f"基准方案下标 {cmp_in.baseline_index} 超出范围（共 {len(plans)} 个方案）")
+
+    pipes_by_id = {p["id"]: p for p in scenario["pipes"]}
+    nodes_by_id = {n["id"]: n for n in scenario["nodes"]}
+
+    seen_names: set[str] = set()
+    norm_plans = []
+    for i, plan in enumerate(plans):
+        label = f"方案 {i + 1}"
+        name = plan.name.strip()
+        if not name:
+            errors.append(f"{label} 的名称不能为空")
+            name = f"方案{i + 1}"
+        elif name in seen_names:
+            errors.append(f"方案名称重复：{name}")
+        seen_names.add(name)
+
+        mpid = plan.maintenance_pipe_id
+        pipe = pipes_by_id.get(mpid)
+        if pipe is None:
+            errors.append(f"{label}（{name}）的待检修管段不存在：{mpid}")
+        elif pipe["is_valve"]:
+            errors.append(f"{label}（{name}）的待检修管段 {mpid} 必须是普通管段，不能是阀门")
+
+        protected: List[str] = []
+        for nid in dict.fromkeys(plan.protected_node_ids):
+            node = nodes_by_id.get(nid)
+            if node is None:
+                errors.append(f"{label}（{name}）必须保供的节点不存在：{nid}")
+            elif node["kind"] == "source":
+                errors.append(f"{label}（{name}）：水源节点 {nid} 无需设为保供节点")
+            else:
+                protected.append(nid)
+
+        norm_plans.append({
+            "name": name,
+            "maintenance_pipe_id": mpid,
+            "protected_node_ids": protected,
+        })
+
+    if errors:
+        return {}, errors
+
+    data = {
+        "name": cmp_in.name.strip() or "未命名对比",
+        "baseline_index": cmp_in.baseline_index,
+        "plans": norm_plans,
     }
     return data, []

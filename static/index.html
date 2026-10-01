@@ -69,8 +69,26 @@
     <div id="solution-box" class="solution-box">
       <p class="muted">尚未求解。</p>
     </div>
+
+    <h2>批量对比</h2>
+    <div id="compare-box" class="compare-box">
+      <button type="button" id="btn-cmp-new" class="primary">新建批量对比</button>
+      <p class="hint">从当前已保存场景创建 2～6 个不可变方案快照，批量求解并与基准方案对比。</p>
+      <ul id="cmp-list" class="cmp-list"></ul>
+    </div>
   </aside>
 </main>
+
+<!-- 批量对比：编辑 / 结果 模态框 -->
+<div id="cmp-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="cmp-modal-title">批量对比</h3>
+      <button type="button" id="cmp-modal-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body" id="cmp-modal-body"></div>
+  </div>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 

@@ -2,6 +2,10 @@
 
 场景与对应方案同表存储：solution_json 为最近一次求解结果，
 刷新页面或重启容器（配合 compose 命名卷）后仍可查看。
+
+批量对比存于 comparisons 表：payload_json 内含各方案的不可变拓扑快照、
+求解结果与状态，场景的后续修改 / 删除不会改写历史快照
+（删除场景时级联删除其对比记录）。
 """
 from __future__ import annotations
 
@@ -21,6 +25,14 @@ CREATE TABLE IF NOT EXISTS scenarios (
     solution_json   TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS comparisons (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scenario_id     INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL
 );
 """
 
@@ -125,4 +137,65 @@ def save_solution(scenario_id: int, solution: dict) -> Optional[dict]:
 def delete_scenario(scenario_id: int) -> bool:
     with _connect() as conn:
         cur = conn.execute("DELETE FROM scenarios WHERE id = ?", (scenario_id,))
+        return cur.rowcount > 0
+
+
+# ---- 批量对比 ----
+
+def _utcnow() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def create_comparison(scenario_id: int, name: str, payload: dict) -> dict:
+    now = _utcnow()
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO comparisons (scenario_id, name, payload_json, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (scenario_id, name, json.dumps(payload, ensure_ascii=False), now),
+        )
+        cmp_id = cur.lastrowid
+    return get_comparison(cmp_id)
+
+
+def get_comparison(cmp_id: int) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM comparisons WHERE id = ?", (cmp_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    payload = json.loads(row["payload_json"])
+    return {
+        "id": row["id"],
+        "scenario_id": row["scenario_id"],
+        "name": row["name"],
+        "created_at": row["created_at"],
+        "baseline_key": payload["baseline_key"],
+        "plans": payload["plans"],
+    }
+
+
+def list_comparisons(scenario_id: int) -> List[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparisons WHERE scenario_id = ?"
+            " ORDER BY created_at DESC, id DESC",
+            (scenario_id,),
+        ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "scenario_id": r["scenario_id"],
+            "name": r["name"],
+            "plan_count": len(json.loads(r["payload_json"])["plans"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def delete_comparison(cmp_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM comparisons WHERE id = ?", (cmp_id,))
         return cur.rowcount > 0

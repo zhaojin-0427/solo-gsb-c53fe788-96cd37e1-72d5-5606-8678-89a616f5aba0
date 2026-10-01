@@ -18,6 +18,7 @@
     maintenancePipeId: null,
     protectedNodeIds: new Set(),
     solution: null,       // 最近一次求解结果（仅展示用，以服务端为准）
+    comparisons: [],      // 当前场景的批量对比摘要列表
     selected: null,       // {type:'node'|'pipe', id}
     tool: "select",
     pipePending: null,    // 连管时的第一个节点 id
@@ -626,6 +627,7 @@
     refreshAll();
     renderScenarioTag();
     renderListActive();
+    loadComparisons().catch((e) => toast("加载批量对比失败：" + e.message, "error"));
     toast(`已载入场景 #${data.id}`, "success");
   }
 
@@ -741,11 +743,13 @@
     S.maintenancePipeId = null;
     S.protectedNodeIds = new Set();
     S.solution = null;
+    S.comparisons = [];
     S.selected = null;
     S.pipePending = null;
     S.dirty = false;
     setTool("select");
     renderSolution();
+    renderCmpList();
     refreshAll();
     renderScenarioTag();
     renderListActive();
@@ -808,6 +812,284 @@
 
   $("btn-save").addEventListener("click", saveScenario);
   $("btn-solve").addEventListener("click", solveScenario);
+
+  // ============================================================
+  // 批量对比
+  // ============================================================
+  const CMP_MIN = 2, CMP_MAX = 6;
+  let cmpDraft = null;   // 编辑器草稿 {name, baseline, plans:[{name, mpid, protected:[]}]}
+
+  function cmpModal() { return $("cmp-modal"); }
+
+  function openCmpModal(title) {
+    $("cmp-modal-title").textContent = title;
+    cmpModal().classList.remove("hidden");
+  }
+
+  function closeCmpModal() {
+    cmpModal().classList.add("hidden");
+    $("cmp-modal-body").innerHTML = "";
+    cmpDraft = null;
+  }
+
+  $("cmp-modal-close").addEventListener("click", closeCmpModal);
+  cmpModal().addEventListener("click", (ev) => {
+    if (ev.target === cmpModal()) closeCmpModal();
+  });
+
+  async function loadComparisons() {
+    if (S.scenarioId == null) { S.comparisons = []; renderCmpList(); return; }
+    S.comparisons = await api(`/api/scenarios/${S.scenarioId}/comparisons`);
+    renderCmpList();
+  }
+
+  function renderCmpList() {
+    const ul = $("cmp-list");
+    if (S.scenarioId == null) {
+      ul.innerHTML = "";
+      return;
+    }
+    ul.innerHTML = S.comparisons.map((c) => `
+      <li data-cmp="${c.id}">
+        <div class="cmp-name">${escapeHtml(c.name)}</div>
+        <div class="cmp-meta">#${c.id} · ${c.plan_count} 个方案 · ${c.created_at.replace("T", " ").replace("Z", "")}</div>
+        <button class="cmp-del" data-cmp-del="${c.id}" title="删除该对比记录">✕</button>
+      </li>`).join("");
+  }
+
+  $("cmp-list").addEventListener("click", async (ev) => {
+    const delBtn = ev.target.closest("[data-cmp-del]");
+    if (delBtn) {
+      ev.stopPropagation();
+      if (!confirm("确定删除该对比记录？方案快照将一并删除，不可恢复。")) return;
+      await api(`/api/comparisons/${delBtn.dataset.cmpDel}`, { method: "DELETE" });
+      await loadComparisons();
+      toast("对比记录已删除", "success");
+      return;
+    }
+    const li = ev.target.closest("li[data-cmp]");
+    if (!li) return;
+    try {
+      const data = await api(`/api/comparisons/${li.dataset.cmp}`);
+      showCmpResult(data);
+    } catch (e) {
+      toast("加载对比结果失败：" + e.message, "error");
+    }
+  });
+
+  // ---- 编辑器 ----
+  function normalPipes() { return S.pipes.filter((p) => !p.isValve); }
+  function userNodes() { return S.nodes.filter((n) => n.kind !== "source"); }
+
+  function openCmpEditor() {
+    cmpDraft = {
+      name: `${S.name}·方案对比`,
+      baseline: 0,
+      plans: [
+        { name: "方案A", mpid: S.maintenancePipeId || "", protected: [] },
+        { name: "方案B", mpid: "", protected: [] },
+      ],
+    };
+    renderCmpEditor();
+    openCmpModal("新建批量对比");
+  }
+
+  function collectCmpDraft() {
+    // 把当前表单值读回草稿（增删行 / 提交前都要先收集）
+    const body = $("cmp-modal-body");
+    cmpDraft.name = body.querySelector("#cmp-name").value;
+    const rows = body.querySelectorAll(".plan-row");
+    rows.forEach((row, i) => {
+      const plan = cmpDraft.plans[i];
+      if (!plan) return;
+      plan.name = row.querySelector(".plan-name").value;
+      plan.mpid = row.querySelector(".plan-mpid").value;
+      plan.protected = Array.from(row.querySelector(".plan-protected").selectedOptions)
+        .map((o) => o.value);
+      if (row.querySelector(".plan-base input").checked) cmpDraft.baseline = i;
+    });
+  }
+
+  function renderCmpEditor() {
+    const pipes = normalPipes();
+    const users = userNodes();
+    const pipeOpts = (sel) =>
+      `<option value="">— 请选择 —</option>` +
+      pipes.map((p) =>
+        `<option value="${escapeHtml(p.id)}" ${p.id === sel ? "selected" : ""}>${escapeHtml(p.id)}（${escapeHtml(p.a)}↔${escapeHtml(p.b)}）</option>`
+      ).join("");
+    const userOpts = (sel) =>
+      users.map((n) =>
+        `<option value="${escapeHtml(n.id)}" ${sel.includes(n.id) ? "selected" : ""}>${escapeHtml(n.id)}·${n.households}户</option>`
+      ).join("");
+
+    $("cmp-modal-body").innerHTML = `
+      <div class="cmp-form">
+        <div class="row">
+          <label class="blk" for="cmp-name">对比名称</label>
+          <input type="text" id="cmp-name" maxlength="128" value="${escapeHtml(cmpDraft.name)}">
+        </div>
+        <div class="row">
+          <label class="blk">方案快照（${CMP_MIN}～${CMP_MAX} 个；创建后拓扑与参数即被冻结，不受后续场景修改影响）</label>
+          <div class="plan-grid">
+            ${cmpDraft.plans.map((p, i) => `
+              <div class="plan-row" data-idx="${i}">
+                <label class="plan-base" title="设为基准方案">
+                  <input type="radio" name="cmp-baseline" ${i === cmpDraft.baseline ? "checked" : ""}>
+                  <div style="font-size:11px;color:var(--muted)">基准</div>
+                </label>
+                <div>
+                  <label class="blk">方案名称</label>
+                  <input type="text" class="plan-name" maxlength="64" value="${escapeHtml(p.name)}">
+                </div>
+                <div>
+                  <label class="blk">待检修普通管段</label>
+                  <select class="plan-mpid">${pipeOpts(p.mpid)}</select>
+                </div>
+                <div>
+                  <label class="blk">必须保供节点（按住 Ctrl 多选）</label>
+                  <select class="plan-protected" multiple>${userOpts(p.protected)}</select>
+                </div>
+                <button type="button" class="plan-del" title="删除该方案"
+                  ${cmpDraft.plans.length <= CMP_MIN ? "disabled" : ""}>✕</button>
+              </div>`).join("")}
+          </div>
+        </div>
+        <div class="cmp-form-actions">
+          <button type="button" id="cmp-add-plan"
+            ${cmpDraft.plans.length >= CMP_MAX ? "disabled" : ""}>＋ 添加方案</button>
+          <button type="button" id="cmp-submit" class="accent">开始批量求解</button>
+          <span class="muted">将依次求解 ${cmpDraft.plans.length} 个方案，每个最长 10 秒。</span>
+        </div>
+      </div>`;
+
+    $("cmp-add-plan").addEventListener("click", () => {
+      collectCmpDraft();
+      const n = cmpDraft.plans.length;
+      if (n >= CMP_MAX) return;
+      cmpDraft.plans.push({
+        name: `方案${"ABCDEF"[n] || n + 1}`, mpid: "", protected: [],
+      });
+      renderCmpEditor();
+    });
+    $("cmp-modal-body").querySelectorAll(".plan-del").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        collectCmpDraft();
+        const idx = Number(ev.target.closest(".plan-row").dataset.idx);
+        cmpDraft.plans.splice(idx, 1);
+        if (cmpDraft.baseline >= cmpDraft.plans.length) cmpDraft.baseline = 0;
+        renderCmpEditor();
+      });
+    });
+    $("cmp-submit").addEventListener("click", submitComparison);
+  }
+
+  async function submitComparison() {
+    collectCmpDraft();
+    const d = cmpDraft;
+    // 前端预检（服务端仍会完整校验）
+    const errs = [];
+    const names = d.plans.map((p) => p.name.trim());
+    if (!d.name.trim()) errs.push("请填写对比名称");
+    if (names.some((n) => !n)) errs.push("每个方案都必须填写名称");
+    if (new Set(names).size !== names.length) errs.push("方案名称不能重复");
+    if (d.plans.some((p) => !p.mpid)) errs.push("每个方案都必须选择待检修普通管段");
+    if (errs.length) { toast(errs.join("\n"), "error"); return; }
+
+    const btn = $("cmp-submit");
+    btn.disabled = true;
+    btn.textContent = "求解中…";
+    try {
+      const data = await api(`/api/scenarios/${S.scenarioId}/comparisons`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: d.name.trim(),
+          baseline_index: d.baseline,
+          plans: d.plans.map((p, i) => ({
+            name: names[i],
+            maintenance_pipe_id: p.mpid,
+            protected_node_ids: p.protected,
+          })),
+        }),
+      });
+      await loadComparisons();
+      showCmpResult(data);
+      toast("批量求解完成", "success");
+    } catch (e) {
+      toast("批量对比失败：\n" + e.message, "error");
+      btn.disabled = false;
+      btn.textContent = "开始批量求解";
+    }
+  }
+
+  // ---- 结果视图 ----
+  function showCmpResult(data) {
+    const diffCell = (p) => {
+      if (p.is_baseline) return '<span class="muted">基准方案</span>';
+      const d = p.diff_vs_baseline;
+      const nd = d.newly_disconnected_node_ids;
+      const rs = d.restored_node_ids;
+      const vc = d.valves_newly_closed, vr = d.valves_reopened;
+      const lines = [];
+      lines.push(nd.length
+        ? `<span class="cmp-diff-neg">新增断供 ${d.newly_disconnected_households} 户：${nd.join(", ")}</span>`
+        : "新增断供：无");
+      lines.push(rs.length
+        ? `<span class="cmp-diff-pos">恢复供水 ${d.restored_households} 户：${rs.join(", ")}</span>`
+        : "恢复供水：无");
+      const vparts = [];
+      if (vc.length) vparts.push(`新增关闭 ${vc.join(", ")}`);
+      if (vr.length) vparts.push(`重新开启 ${vr.join(", ")}`);
+      lines.push("阀门变更：" + (vparts.join("；") || "无"));
+      return lines.join("<br>");
+    };
+
+    $("cmp-modal-body").innerHTML = `
+      <p class="cmp-summary">
+        对比「${escapeHtml(data.name)}」 · 场景 #${data.scenario_id} ·
+        基准方案「${escapeHtml(data.baseline_name)}」 ·
+        创建于 ${data.created_at.replace("T", " ").replace("Z", "")} ·
+        方案按名称排序
+      </p>
+      <div class="cmp-table-wrap">
+        <table class="cmp-table">
+          <thead><tr>
+            <th>方案</th><th>求解状态</th><th>检修段</th><th>保供节点</th>
+            <th>断供户数</th><th>关闭阀门</th><th>断供节点</th><th>供水节点</th>
+            <th>与基准方案对比</th>
+          </tr></thead>
+          <tbody>
+            ${data.plans.map((p) => `
+              <tr>
+                <td><strong>${escapeHtml(p.name)}</strong>${p.is_baseline ? '<span class="cmp-base-tag">基准</span>' : ""}</td>
+                <td>${STATUS_TEXT[p.solve_status] || p.solve_status}</td>
+                <td class="mono">${escapeHtml(p.maintenance_pipe_id)}</td>
+                <td class="mono">${p.protected_node_ids.join(", ") || "—"}</td>
+                <td class="mono">${p.disconnected_households} / ${p.total_households}</td>
+                <td class="mono">${p.closed_valve_ids.join(", ") || "—"}（${p.closed_valve_count}）</td>
+                <td class="mono">${p.disconnected_node_ids.join(", ") || "—"}</td>
+                <td class="mono">${p.supplied_node_ids.join(", ") || "—"}</td>
+                <td>${diffCell(p)}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    openCmpModal(`批量对比结果 · ${data.name}`);
+  }
+
+  $("btn-cmp-new").addEventListener("click", async () => {
+    if (S.nodes.length === 0) { toast("请先搭建或载入管网", "error"); return; }
+    if (normalPipes().length === 0) {
+      toast("当前管网没有普通管段，无法指定待检修段", "error");
+      return;
+    }
+    if (S.scenarioId == null || S.dirty) {
+      toast("检测到未保存修改，正在先保存场景…");
+      const ok = await saveScenario();
+      if (!ok) return;
+    }
+    openCmpEditor();
+  });
 
   window.addEventListener("beforeunload", (e) => {
     if (S.dirty) { e.preventDefault(); e.returnValue = ""; }

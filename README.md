@@ -5,6 +5,12 @@
 OR-Tools CP-SAT 求解器在 **10 秒**时限内寻找字典序最优的阀门关闭方案，并在画布上
 标出关闭阀门、供水 / 断供节点。
 
+支持**方案批量对比**：从同一已保存管网创建 2～6 个**不可变检修方案快照**（各自独立
+指定待检修管段、保供节点与名称），批量调用求解器并保留各次求解状态，以任一方案为
+**基准方案**，输出各方案的断供户数、关闭阀门、供水 / 断供节点及与基准的
+**新增断供 / 恢复供水 / 阀门变更**。快照在创建时冻结拓扑，后续修改场景不会改写
+历史快照；对比结果持久化，刷新页面后可重新加载。
+
 ---
 
 ## 一、快速启动
@@ -91,6 +97,26 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 点击顶部「载入示例」可加载一个双水源环网（检修段 `P_M`、保供 N4/N5），
 其最优方案为关闭阀门 **V2、V3、V6、V7**，断供 230 户，可直接点「求解方案」体验。
 
+### 5. 批量对比（方案快照）
+
+右侧面板「批量对比」区块可对**当前已保存场景**发起批量对比（有未保存修改时会先
+自动保存）：
+
+1. 点击「新建批量对比」，在弹窗中填写对比名称，并维护 **2～6 个方案**：
+   每个方案独立指定**名称**、**待检修普通管段**（下拉选择，阀门不可选）与
+   **必须保供节点**（多选）；用「基准」单选钮指定**基准方案**。
+2. 点击「开始批量求解」：后端为每个方案复制一份**创建时刻的拓扑快照**并依次调用
+   求解器（每个方案最长 10 秒），各次求解状态随快照一并持久化。
+3. 结果表按**方案名称排序**，列出每个方案的求解状态、断供户数、关闭阀门列表、
+   断供 / 供水节点，以及**与基准方案的差异**：
+   - **新增断供**：本方案断供而基准方案供水的节点（含户数）；
+   - **恢复供水**：本方案供水而基准方案断供的节点（含户数）；
+   - **阀门变更**：相对基准「新增关闭 / 重新开启」的阀门。
+4. **不可变性**：快照在创建时冻结拓扑与参数，之后修改场景（增删管段、改户数、
+   改保供……）都不会改写历史快照；删除场景会级联删除其对比记录。
+5. **持久化**：对比结果存入 SQLite，刷新页面或重启容器后，打开对应场景即可在
+   「批量对比」列表中重新查看；每条记录可单独删除。
+
 ---
 
 ## 三、优化模型与判定规则
@@ -137,14 +163,134 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | GET | `/api/scenarios` | 场景列表（含最近方案状态） |
 | POST | `/api/scenarios` | 新建场景；校验失败返回 `400` 与中文错误列表 |
 | GET | `/api/scenarios/{id}` | 场景详情（含拓扑与最近方案） |
-| PUT | `/api/scenarios/{id}` | 更新场景（旧方案作废） |
-| DELETE | `/api/scenarios/{id}` | 删除场景 |
+| PUT | `/api/scenarios/{id}` | 更新场景（旧方案作废；不影响已创建的对比快照） |
+| DELETE | `/api/scenarios/{id}` | 删除场景（级联删除其批量对比记录） |
 | POST | `/api/scenarios/{id}/solve` | 求解并持久化方案 |
+| POST | `/api/scenarios/{id}/comparisons` | 创建批量对比：2～6 个方案快照 + 基准下标，批量求解并持久化 |
+| GET | `/api/scenarios/{id}/comparisons` | 该场景的对比记录列表 |
+| GET | `/api/comparisons/{id}` | 对比详情（按方案名排序，含与基准的差异） |
+| DELETE | `/api/comparisons/{id}` | 删除对比记录 |
 
 示例：
 
 ```bash
 curl -s http://localhost:8000/api/scenarios | python3 -m json.tool
+```
+
+### 批量对比：实际请求与响应示例
+
+以下示例基于「载入示例」内置管网（先保存为场景 `#1`）。请求创建 3 个方案快照，
+以第 1 个（`baseline_index: 0`）为基准方案：
+
+```bash
+curl -s -X POST http://localhost:8000/api/scenarios/1/comparisons \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "十月检修窗口对比",
+    "baseline_index": 0,
+    "plans": [
+      {"name": "方案A·检修P_M",     "maintenance_pipe_id": "P_M", "protected_node_ids": ["N4", "N5"]},
+      {"name": "方案B·检修P45",     "maintenance_pipe_id": "P45", "protected_node_ids": ["N4", "N5"]},
+      {"name": "方案C·检修P_M不保供", "maintenance_pipe_id": "P_M", "protected_node_ids": []}
+    ]
+  }'
+```
+
+实际响应（`201 Created`，已按方案名排序；时间戳为真实求解时刻）：
+
+```json
+{
+  "baseline_key": "1",
+  "baseline_name": "方案A·检修P_M",
+  "plans": [
+    {
+      "key": "1",
+      "name": "方案A·检修P_M",
+      "is_baseline": true,
+      "maintenance_pipe_id": "P_M",
+      "protected_node_ids": ["N4", "N5"],
+      "solve_status": "optimal",
+      "solved_at": "2026-10-01T17:34:44Z",
+      "disconnected_households": 230,
+      "total_households": 570,
+      "closed_valve_ids": ["V2", "V3", "V6", "V7"],
+      "closed_valve_count": 4,
+      "supplied_node_ids": ["N1", "N4", "N5", "N6"],
+      "disconnected_node_ids": ["N2", "N3"],
+      "diff_vs_baseline": {
+        "newly_disconnected_node_ids": [],
+        "newly_disconnected_households": 0,
+        "restored_node_ids": [],
+        "restored_households": 0,
+        "valves_newly_closed": [],
+        "valves_reopened": []
+      }
+    },
+    {
+      "key": "2",
+      "name": "方案B·检修P45",
+      "is_baseline": false,
+      "maintenance_pipe_id": "P45",
+      "protected_node_ids": ["N4", "N5"],
+      "solve_status": "infeasible",
+      "solved_at": "2026-10-01T17:34:44Z",
+      "disconnected_households": 570,
+      "total_households": 570,
+      "closed_valve_ids": [],
+      "closed_valve_count": 0,
+      "supplied_node_ids": [],
+      "disconnected_node_ids": ["N1", "N2", "N3", "N4", "N5", "N6"],
+      "diff_vs_baseline": {
+        "newly_disconnected_node_ids": ["N1", "N4", "N5", "N6"],
+        "newly_disconnected_households": 340,
+        "restored_node_ids": [],
+        "restored_households": 0,
+        "valves_newly_closed": [],
+        "valves_reopened": ["V2", "V3", "V6", "V7"]
+      }
+    },
+    {
+      "key": "3",
+      "name": "方案C·检修P_M不保供",
+      "is_baseline": false,
+      "maintenance_pipe_id": "P_M",
+      "protected_node_ids": [],
+      "solve_status": "optimal",
+      "solved_at": "2026-10-01T17:34:44Z",
+      "disconnected_households": 230,
+      "total_households": 570,
+      "closed_valve_ids": ["V2", "V3", "V6", "V7"],
+      "closed_valve_count": 4,
+      "supplied_node_ids": ["N1", "N4", "N5", "N6"],
+      "disconnected_node_ids": ["N2", "N3"],
+      "diff_vs_baseline": {
+        "newly_disconnected_node_ids": [],
+        "newly_disconnected_households": 0,
+        "restored_node_ids": [],
+        "restored_households": 0,
+        "valves_newly_closed": [],
+        "valves_reopened": []
+      }
+    }
+  ],
+  "id": 1,
+  "scenario_id": 1,
+  "name": "十月检修窗口对比",
+  "created_at": "2026-10-01T17:34:44Z"
+}
+```
+
+> 说明：方案B 的检修段 `P45` 是保供节点 N4、N5 之间唯一的连通管段，其两个端点
+> 必须断压，与「N4/N5 必须保供」冲突，故求解状态为 `infeasible`（无解）——
+> 各次求解状态都会如实保留在快照中。`diff_vs_baseline` 中
+> `newly_disconnected_*` 为相对基准的**新增断供**，`restored_*` 为**恢复供水**，
+> `valves_newly_closed` / `valves_reopened` 为**阀门变更**。
+
+刷新页面或重启容器后，可随时取回该对比结果：
+
+```bash
+curl -s http://localhost:8000/api/scenarios/1/comparisons | python3 -m json.tool
+curl -s http://localhost:8000/api/comparisons/1 | python3 -m json.tool
 ```
 
 ---
@@ -160,9 +306,10 @@ curl -s http://localhost:8000/api/scenarios | python3 -m json.tool
 ├── app/
 │   ├── main.py                 # FastAPI 路由 + 静态托管
 │   ├── models.py               # Pydantic 请求模型
-│   ├── validation.py           # 容量 / ID / 端点校验（≤80/120/40）
+│   ├── validation.py           # 容量 / ID / 端点校验（≤80/120/40）+ 批量对比校验
 │   ├── solver.py               # OR-Tools CP-SAT 三阶段字典序求解 + BFS 复核
-│   └── db.py                   # SQLite 持久化
+│   ├── compare.py              # 批量对比：不可变快照、批量求解、基准差异计算
+│   └── db.py                   # SQLite 持久化（场景 + 对比快照）
 └── static/
     ├── index.html              # 单页界面
     ├── css/app.css
