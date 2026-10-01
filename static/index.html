@@ -14,6 +14,7 @@
     <button id="btn-sample" type="button" title="加载内置示例管网">载入示例</button>
     <button id="btn-save" type="button" class="primary" title="保存场景到服务器">保存场景</button>
     <button id="btn-solve" type="button" class="accent" title="求解最优隔离方案（限时 10 秒）">求解方案</button>
+    <button id="btn-compare" type="button" class="compare" title="基于同一已保存管网的 2～6 个方案快照做批量对比">方案批量对比</button>
   </div>
 </header>
 
@@ -50,6 +51,9 @@
       <span><i class="lg-valve-open"></i>阀门（开启）</span>
       <span><i class="lg-valve-closed"></i>关闭阀门</span>
       <span><i class="lg-main"></i>检修段</span>
+      <span><i class="lg-newoff"></i>对比：新增断供</span>
+      <span><i class="lg-restored"></i>对比：恢复供水</span>
+      <span><i class="lg-newvalve"></i>对比：新关阀门</span>
     </div>
   </section>
 
@@ -69,8 +73,77 @@
     <div id="solution-box" class="solution-box">
       <p class="muted">尚未求解。</p>
     </div>
+
+    <h2>批量对比结果</h2>
+    <div id="comparison-box" class="comparison-box">
+      <p class="muted">尚未生成对比。</p>
+    </div>
   </aside>
 </main>
+
+<!-- 画布顶部：当前正在查看的对比结果条 -->
+<div id="cmp-bar" class="cmp-bar hidden">
+  <div class="cmp-bar-info">
+    <strong>批量对比</strong>
+    <span id="cmp-bar-title" class="muted"></span>
+  </div>
+  <label class="cmp-bar-plan">查看方案
+    <select id="cmp-bar-select"></select>
+  </label>
+  <button type="button" id="cmp-bar-exit" class="danger" title="退出对比视图，返回管网编辑">退出对比</button>
+</div>
+
+<!-- 方案批量对比弹窗 -->
+<div id="cmp-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>方案批量对比</h3>
+      <button type="button" id="cmp-modal-close" class="modal-x" title="关闭">✕</button>
+    </div>
+    <p class="modal-tip">
+      基于<strong>当前已保存管网</strong>创建 2～6 个不可变方案快照（各自指定检修普通管段、
+      必须保供节点与名称），勾选参与对比的方案并指定一个<strong>基准方案</strong>。
+      管网之后再被修改不会改写这里的历史快照。
+    </p>
+
+    <div class="modal-body">
+      <section>
+        <h4>新建方案快照 <span class="muted" id="cmp-plan-count"></span></h4>
+        <div class="cmp-form">
+          <label>名称
+            <input type="text" id="cmp-new-name" maxlength="128" placeholder="例如：保供优先方案"></label>
+          <label>待检修普通管段
+            <select id="cmp-new-pipe"><option value="">（不选，仅查看连通状态）</option></select></label>
+          <label>必须保供节点
+            <div id="cmp-new-protected" class="cmp-checks"></div>
+          </label>
+          <button type="button" id="cmp-new-add" class="primary">创建快照</button>
+        </div>
+      </section>
+
+      <section>
+        <h4>已有快照 <span class="muted" id="cmp-stale-hint"></span></h4>
+        <div id="cmp-plan-list" class="cmp-plan-list"></div>
+      </section>
+
+      <section>
+        <h4>本次对比</h4>
+        <div class="cmp-run-row">
+          <label>基准方案
+            <select id="cmp-baseline"></select>
+          </label>
+          <button type="button" id="cmp-run" class="accent">批量求解并对比</button>
+        </div>
+        <p class="muted" id="cmp-run-hint">勾选 2～6 个同一版管网的快照后发起对比。</p>
+      </section>
+
+      <section>
+        <h4>对比历史</h4>
+        <div id="cmp-history" class="cmp-history"></div>
+      </section>
+    </div>
+  </div>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 

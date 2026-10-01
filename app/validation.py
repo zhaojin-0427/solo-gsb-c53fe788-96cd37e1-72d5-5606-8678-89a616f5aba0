@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import List, Tuple
 
 from .models import ScenarioIn
@@ -13,6 +15,19 @@ MAX_PIPES = 120
 MAX_VALVES = 40
 MAX_HOUSEHOLDS = 100_000_000  # 单个节点户数上限，防止求解器数值溢出
 COORD_BOUND = 100_000.0
+
+
+def topology_canonical(nodes, pipes) -> str:
+    """规范化拓扑（节点/管段按 ID 排序，键排序），用于指纹比较。"""
+    n = sorted(nodes, key=lambda x: x["id"])
+    p = sorted(pipes, key=lambda x: x["id"])
+    return json.dumps({"nodes": n, "pipes": p},
+                      sort_keys=True, ensure_ascii=False)
+
+
+def topology_hash(nodes, pipes) -> str:
+    """管网拓扑 + 参数的短指纹；前端据此识别“当前管网是否已在快照后改版”。"""
+    return hashlib.sha256(topology_canonical(nodes, pipes).encode("utf-8")).hexdigest()[:16]
 
 
 def validate_scenario(sc: ScenarioIn) -> List[str]:
@@ -111,5 +126,57 @@ def normalize(sc: ScenarioIn) -> Tuple[dict, List[str]]:
         ],
         "maintenance_pipe_id": sc.maintenance_pipe_id,
         "protected_node_ids": list(dict.fromkeys(sc.protected_node_ids)),
+    }
+    return data, []
+
+
+def validate_plan_choices(scenario: dict, name: str,
+                          maintenance_pipe_id, protected_node_ids) -> Tuple[dict, List[str]]:
+    """在已保存场景的拓扑快照上校验一个方案快照的选择是否合法，
+    并返回可直接入库 / 求解的规整数据（拓扑深拷贝自场景）。
+
+    方案只能指定检修普通管段与保供节点，拓扑本身来自已保存场景，
+    因此容量 / ID / 端点等无需重复校验；这里只检查：
+    检修段存在且为普通管段、保供节点存在且不是水源、名称非空。
+    """
+    errors: List[str] = []
+    name = (name or "").strip()
+    if not name:
+        errors.append("方案名称不能为空")
+    elif len(name) > 128:
+        errors.append("方案名称不能超过 128 个字符")
+
+    pipe_ids = {p["id"] for p in scenario["pipes"]}
+    if maintenance_pipe_id is not None:
+        if maintenance_pipe_id not in pipe_ids:
+            errors.append(f"待检修管段不存在：{maintenance_pipe_id}")
+        else:
+            target = next(p for p in scenario["pipes"]
+                          if p["id"] == maintenance_pipe_id)
+            if target.get("is_valve"):
+                errors.append(
+                    f"待检修管段 {maintenance_pipe_id} 必须是普通管段，不能是阀门")
+
+    node_by_id = {n["id"]: n for n in scenario["nodes"]}
+    protected: list = []
+    for nid in protected_node_ids or []:
+        if nid in protected:
+            continue
+        protected.append(nid)
+        if nid not in node_by_id:
+            errors.append(f"必须保供的节点不存在：{nid}")
+        elif node_by_id[nid].get("kind") == "source":
+            errors.append(f"水源节点 {nid} 无需设为保供节点（水源本身不耗水）")
+
+    if errors:
+        return {}, errors
+
+    data = {
+        "name": name,
+        # 深拷贝：即使上游 dict 后续被修改，快照内容也不受影响
+        "nodes": json.loads(json.dumps(scenario["nodes"])),
+        "pipes": json.loads(json.dumps(scenario["pipes"])),
+        "maintenance_pipe_id": maintenance_pipe_id,
+        "protected_node_ids": protected,
     }
     return data, []
